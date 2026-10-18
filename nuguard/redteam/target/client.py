@@ -123,6 +123,50 @@ def _contains_message_token(obj: Any) -> bool:
     return False
 
 
+_CHAT_METHODS = frozenset({"GET", "POST", "PUT", "PATCH"})
+
+
+def _to_query_params(body: Any) -> dict[str, Any]:
+    """Flatten a chat payload into query parameters (``chat_payload_in: query``).
+
+    Scalars become strings, booleans become ``true``/``false``, lists of scalars
+    become repeated parameters, and anything nested is JSON-encoded. ``None``
+    values are dropped.
+    """
+    if not isinstance(body, dict):
+        return {}
+
+    def _scalar(value: Any) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    params: dict[str, Any] = {}
+    for key, value in body.items():
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)) and all(
+            isinstance(v, (str, int, float, bool)) for v in value
+        ):
+            params[key] = [_scalar(v) for v in value]
+        elif isinstance(value, (str, int, float, bool)):
+            params[key] = _scalar(value)
+        else:
+            params[key] = json.dumps(value, default=str)
+    return params
+
+
+def _parse_plain_text_reply(text: str) -> Any:
+    """Reply body of a ``text/plain`` response: parsed JSON when it is JSON, else the text."""
+    stripped = text.strip()
+    if stripped[:1] in ("{", "["):
+        try:
+            return json.loads(stripped)
+        except ValueError:
+            pass
+    return stripped
+
+
 def _render_payload_template(
     template: Any,
     *,
@@ -309,6 +353,10 @@ class TargetAppClient:
         # value for chat_payload_key is a dict built from this template instead
         # of a plain string (e.g. {"role": "user", "content": "..."}).
         chat_payload_value_template: "dict[str, Any] | None" = None,
+        # HTTP method for chat turns and where the payload goes. GET defaults to the
+        # query string ("query"); the other methods default to the body ("body").
+        chat_method: str = "POST",
+        chat_payload_in: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._chat_path = chat_path
@@ -319,6 +367,13 @@ class TargetAppClient:
             chat_payload_format if chat_payload_format in ("json", "form") else "json"
         )
         self._chat_payload_extras: dict[str, Any] = chat_payload_extras or {}
+        _method = (chat_method or "POST").upper()
+        self._chat_method = _method if _method in _CHAT_METHODS else "POST"
+        self._chat_payload_in = (
+            chat_payload_in
+            if chat_payload_in in ("body", "query")
+            else ("query" if self._chat_method == "GET" else "body")
+        )
         self._chat_response_key = chat_response_key  # explicit key overrides auto-detection
         # Lazily-detected response key: set on the first successful dict response when
         # no explicit key is configured.  Avoids returning raw JSON to judges.
@@ -743,11 +798,14 @@ class TargetAppClient:
     async def _post_chat(
         self, chat_path: str, body: Any, headers: dict[str, str] | None,
     ) -> httpx.Response:
-        """POST to the chat path, refreshing the web session once on a cookie/CSRF rejection."""
+        """Send to the chat path, refreshing the web session once on a cookie/CSRF rejection."""
         async def _once() -> httpx.Response:
-            if self._chat_payload_format == "form":
-                return await self._client.post(chat_path, data=body, headers=headers)
-            return await self._client.post(chat_path, json=body, headers=headers)
+            return await self._client.request(
+                self._chat_method,
+                chat_path,
+                headers=headers,
+                **self._chat_request_kwargs(body),
+            )
 
         generation = self._session_generation
         resp = await _once()
@@ -758,6 +816,14 @@ class TargetAppClient:
         ):
             resp = await _once()
         return resp
+
+    def _chat_request_kwargs(self, body: Any) -> dict[str, Any]:
+        """httpx keyword arguments carrying *body* as query, form or JSON."""
+        if self._chat_payload_in == "query":
+            return {"params": _to_query_params(body)}
+        if self._chat_payload_format == "form":
+            return {"data": body}
+        return {"json": body}
 
     def update_default_headers(self, headers: dict[str, str] | None) -> None:
         """Merge headers into the default client headers for subsequent requests."""
@@ -1129,8 +1195,9 @@ class TargetAppClient:
                 session.last_request_body = body
 
                 _log.debug(
-                    "Target HTTP POST url=%s body=%s",
-                    chat_path, json.dumps(body, default=str),
+                    f"Target HTTP {self._chat_method} url=%s body=%s",
+                    chat_path,
+                    json.dumps(body, default=str),
                 )
                 resp = await self._post_chat(chat_path, body, _req_headers)
                 if transport is not None:
@@ -1206,6 +1273,9 @@ class TargetAppClient:
                         data = ""
                     else:
                         data = ""
+                elif _content_type == "text/plain" and self._framework_adapter is None:
+                    # Plain-text reply (e.g. a Spring controller returning String).
+                    data = _parse_plain_text_reply(resp.text)
                 else:
                     data = resp.json()
                 break
@@ -1602,18 +1672,15 @@ class TargetAppClient:
                     return
 
             t_start = time.monotonic()
-            _stream_kwargs: dict[str, Any] = (
-                {"data": body}
-                if self._chat_payload_format == "form"
-                else {"json": body}
-            )
+            _stream_kwargs: dict[str, Any] = self._chat_request_kwargs(body)
             _log.debug(
-                "Target HTTP POST (stream) url=%s body=%s",
-                chat_path, json.dumps(body, default=str),
+                f"Target HTTP {self._chat_method} (stream) url=%s body=%s",
+                chat_path,
+                json.dumps(body, default=str),
             )
             if transport is not None:
                 _stream_kwargs["headers"] = transport.request_headers()
-            async with self._client.stream("POST", chat_path, **_stream_kwargs) as resp:
+            async with self._client.stream(self._chat_method, chat_path, **_stream_kwargs) as resp:
                 resp.raise_for_status()
                 content_type = resp.headers.get("content-type", "")
 
