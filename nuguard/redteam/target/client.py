@@ -763,12 +763,16 @@ class TargetAppClient:
     ) -> httpx.Response:
         """Send to the chat path, refreshing the web session once on a cookie/CSRF rejection."""
         async def _once() -> httpx.Response:
-            return await self._client.request(
-                self._chat_method,
-                chat_path,
-                headers=headers,
-                **self._chat_request_kwargs(body),
-            )
+            if self._chat_method != "POST" or self._chat_payload_in != "body":
+                return await self._client.request(
+                    self._chat_method,
+                    chat_path,
+                    headers=headers,
+                    **self._chat_request_kwargs(body),
+                )
+            if self._chat_payload_format == "form":
+                return await self._client.post(chat_path, data=body, headers=headers)
+            return await self._client.post(chat_path, json=body, headers=headers)
 
         generation = self._session_generation
         resp = await _once()

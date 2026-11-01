@@ -1694,14 +1694,15 @@ class RedteamOrchestrator:
         # 0. Endpoint auto-discovery (Option A) or payload-shape detection (Option B).
         # Option A: no path configured — probe SBOM endpoints live.
         # Option B: path known but key is default "message" — detect nested shape.
-        if not self._chat_path or (
-            self._chat_payload_key == "message" and not self._chat_payload_key_explicit
-        ):
         # A pinned GET / query-string chat endpoint cannot be shape-probed with POSTs.
         _method, _payload_in = resolve_chat_request(self._chat_method, self._chat_payload_in)
         _custom_request = _method != "POST" or _payload_in == "query"
         _pinned_request = _custom_request and bool(self._chat_path_explicit)
-        if not self._chat_path or (self._chat_payload_key == "message" and not _pinned_request):
+        if not self._chat_path or (
+            self._chat_payload_key == "message"
+            and not self._chat_payload_key_explicit
+            and not _pinned_request
+        ):
             await self._maybe_probe_endpoints()
 
         from nuguard.common.session_resolver import resolve_target_session
