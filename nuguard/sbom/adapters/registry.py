@@ -133,8 +133,10 @@ def default_framework_adapters() -> tuple[FrameworkAdapter, ...]:
     """
     from .csharp import (
         CSharpAspNetCoreAdapter,
+        CSharpDatastoreAdapter,
         CSharpLLMClientsAdapter,
         CSharpMLNetAdapter,
+        CSharpPromptAdapter,
         CSharpSemanticKernelAdapter,
     )
     from .data_classification import DataClassificationPythonAdapter
@@ -282,8 +284,10 @@ def default_framework_adapters() -> tuple[FrameworkAdapter, ...]:
         GenkitGoAdapter(),
         # C# adapters
         CSharpAspNetCoreAdapter(),
+        CSharpDatastoreAdapter(),
         CSharpLLMClientsAdapter(),
         CSharpMLNetAdapter(),
+        CSharpPromptAdapter(),
         CSharpSemanticKernelAdapter(),
         # Java adapters
         JavaWebAdapter(),
